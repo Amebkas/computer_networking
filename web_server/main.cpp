@@ -95,7 +95,7 @@ void HandleRequest(int clientSocket)
                << "Content-Type: text/plain\r\n"
                << "Content-Length: " << body.length() << "\r\n"
                << "Connection: close\r\n\r\n"
-               << body << "\r\n";
+               << body;
 
         string response = header.str();
         write(clientSocket, response.c_str(), response.length());
