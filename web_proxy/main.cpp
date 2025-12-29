@@ -21,6 +21,7 @@ struct ProxyStats
     int totalRequests = 0;
     int cacheHits = 0;
     int cacheMisses = 0;
+    int errorResponses = 0;
 };
 
 ProxyStats globalStats;
@@ -40,16 +41,30 @@ bool FileExists(string name)
     return (stat(name.c_str(), &buffer) == 0);
 }
 
+bool IsSuccessResponse(const char* buffer, int length)
+{
+    string responseHeader(buffer, length);
+    size_t firstLineEnd = responseHeader.find("\r\n");
+    if (firstLineEnd != string::npos)
+    {
+        string firstLine = responseHeader.substr(0, firstLineEnd);
+        if (firstLine.find("200") != string::npos)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 void ParseRequest(string request, string& host, string& path)
 {
     size_t firstSpace = request.find(" ");
     size_t secondSpace = request.find(" ", firstSpace + 1);
+    if (firstSpace == string::npos || secondSpace == string::npos) return;
+
     string url = request.substr(firstSpace + 1, secondSpace - firstSpace - 1);
 
-    if (url.find("http://") == 0)
-    {
-        url = url.substr(7);
-    }
+    if (url.find("http://") == 0) url = url.substr(7);
 
     size_t slashPos = url.find("/");
     if (slashPos != string::npos)
@@ -72,6 +87,13 @@ void SendErrorResponse(int clientSocket, string code, string msg)
     send(clientSocket, response.c_str(), response.length(), 0);
 }
 
+void PrintStats()
+{
+    cout << "[INFO] Stats -> Hits: " << globalStats.cacheHits 
+         << ", Misses: " << globalStats.cacheMisses 
+         << ", Errors: " << globalStats.errorResponses << endl;
+}
+
 void HandleClient(int clientSocket)
 {
     char buffer[BUFFER_SIZE];
@@ -84,7 +106,7 @@ void HandleClient(int clientSocket)
         return;
     }
 
-    string request(buffer);
+    string request(buffer, bytesReceived);
     if (request.find("GET") != 0)
     {
         SendErrorResponse(clientSocket, "501", "Not Implemented");
@@ -93,40 +115,42 @@ void HandleClient(int clientSocket)
     }
 
     globalStats.totalRequests++;
-    string host, path;
+    string host = "", path = "";
     ParseRequest(request, host, path);
+
+    if (host.empty())
+    {
+        close(clientSocket);
+        return;
+    }
 
     string cacheFile = GetCacheFilename(host + path);
 
     if (FileExists(cacheFile))
     {
-        cout << "[CACHE HIT] Serving " << host << path << " from disk" << endl;
+        cout << "[CACHE HIT] " << host << path << endl;
         globalStats.cacheHits++;
         
         ifstream file(cacheFile, ios::binary);
-        while (!file.eof())
+        while (file.read(buffer, BUFFER_SIZE) || file.gcount() > 0)
         {
-            file.read(buffer, BUFFER_SIZE);
             send(clientSocket, buffer, file.gcount(), 0);
         }
         file.close();
     }
     else
     {
-        cout << "[CACHE MISS] Fetching " << host << path << " from server" << endl;
+        cout << "[CACHE MISS] Fetching " << host << path << endl;
         globalStats.cacheMisses++;
 
         struct hostent* server = gethostbyname(host.c_str());
         if (!server)
         {
+            globalStats.errorResponses++;
             SendErrorResponse(clientSocket, "404", "Not Found");
-            
-            cout << "[ERROR] Host not found: " << host << endl;
-            cout << "[INFO] Current Stats -> Hits: " << globalStats.cacheHits 
-                 << ", Misses: " << globalStats.cacheMisses << endl;
-                 
+            PrintStats();
             close(clientSocket);
-            return; 
+            return;
         }
 
         int targetSocket = socket(AF_INET, SOCK_STREAM, 0);
@@ -138,7 +162,9 @@ void HandleClient(int clientSocket)
 
         if (connect(targetSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0)
         {
+            globalStats.errorResponses++;
             SendErrorResponse(clientSocket, "502", "Bad Gateway");
+            PrintStats();
             close(targetSocket);
             close(clientSocket);
             return;
@@ -149,20 +175,38 @@ void HandleClient(int clientSocket)
         remoteRequest += "Connection: close\r\n\r\n";
         send(targetSocket, remoteRequest.c_str(), remoteRequest.length(), 0);
 
-        ofstream file(cacheFile, ios::binary);
-        int n;
-        while ((n = recv(targetSocket, buffer, BUFFER_SIZE, 0)) > 0)
+        int n = recv(targetSocket, buffer, BUFFER_SIZE, 0);
+        if (n > 0)
         {
+            bool shouldCache = IsSuccessResponse(buffer, n);
+            ofstream cacheOut;
+            
+            if (shouldCache)
+            {
+                cacheOut.open(cacheFile, ios::binary);
+            }
+            else
+            {
+                cout << "[INFO] Response is not 200 OK. Not caching." << endl;
+                globalStats.errorResponses++;
+            }
+
             send(clientSocket, buffer, n, 0);
-            file.write(buffer, n);
+            if (shouldCache && cacheOut.is_open()) cacheOut.write(buffer, n);
+
+            while ((n = recv(targetSocket, buffer, BUFFER_SIZE, 0)) > 0)
+            {
+                send(clientSocket, buffer, n, 0);
+                if (shouldCache && cacheOut.is_open()) cacheOut.write(buffer, n);
+            }
+            
+            if (cacheOut.is_open()) cacheOut.close();
         }
-        file.close();
         close(targetSocket);
     }
 
+    PrintStats();
     close(clientSocket);
-    cout << "[INFO] Current Stats -> Hits: " << globalStats.cacheHits 
-         << ", Misses: " << globalStats.cacheMisses << endl;
 }
 
 int main()
@@ -180,7 +224,6 @@ int main()
 
     if (bind(serverSocket, (struct sockaddr*)&proxyAddr, sizeof(proxyAddr)) < 0)
     {
-        cerr << "Bind failed" << endl;
         return 1;
     }
 

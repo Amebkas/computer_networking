@@ -11,15 +11,39 @@ using namespace std;
 const int BUFFER_SIZE = 4096;
 const int SMTP_PORT = 1025;
 
-void ReceiveResponse(int clientSocket)
+string ReadLine(int clientSocket)
 {
-    char buffer[BUFFER_SIZE];
-    memset(buffer, 0, BUFFER_SIZE);
-    int bytesRead = read(clientSocket, buffer, BUFFER_SIZE - 1);
-    if (bytesRead > 0)
+    string line = "";
+    char c;
+    while (read(clientSocket, &c, 1) > 0)
     {
-        cout << "S: " << buffer;
+        line += c;
+        if (line.length() >= 2 && line.substr(line.length() - 2) == "\r\n")
+        {
+            break;
+        }
     }
+    return line;
+}
+
+bool ExpectResponse(int clientSocket, int expectedCode)
+{
+    string fullResponse = "";
+    string lastLine = "";
+    
+    while (true)
+    {
+        lastLine = ReadLine(clientSocket);
+        fullResponse += lastLine;
+        if (lastLine.length() < 4) break;
+        if (lastLine[3] == ' ') break;
+    }
+
+    cout << "S: " << fullResponse;
+    
+    if (fullResponse.empty()) return false;
+    int actualCode = stoi(fullResponse.substr(0, 3));
+    return actualCode == expectedCode;
 }
 
 void SendCommand(int clientSocket, string command)
@@ -33,76 +57,48 @@ string GetIpByHostname(string hostname)
     struct hostent* he;
     struct in_addr** addrList;
     he = gethostbyname(hostname.c_str());
-    if (he == NULL)
-    {
-        return "";
-    }
+    if (he == NULL) return "";
     addrList = (struct in_addr**)he->h_addr_list;
     return inet_ntoa(*addrList[0]);
 }
 
 int main()
-{ 
+{
     string smtpServer = "127.0.0.1";
     string sender = "test@example.com";
     string recipient = "your_email@mail.ru";
-    string subject = "Test Subject";
-    string body = "Hello! This is a test message from my C++ SMTP client.";
 
     int clientSocket = socket(AF_INET, SOCK_STREAM, 0);
-    if (clientSocket < 0)
-    {
-        cerr << "Error creating socket" << endl;
-        return 1;
-    }
-
     string serverIp = GetIpByHostname(smtpServer);
-    if (serverIp == "")
-    {
-        cerr << "Could not resolve hostname" << endl;
-        return 1;
-    }
-
+    
     struct sockaddr_in serverAddr;
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_port = htons(SMTP_PORT);
     inet_pton(AF_INET, serverIp.c_str(), &serverAddr.sin_addr);
 
-    if (connect(clientSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0)
-    {
-        cerr << "Connection failed" << endl;
-        return 1;
-    }
+    if (connect(clientSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) return 1;
 
-    ReceiveResponse(clientSocket);
+    if (!ExpectResponse(clientSocket, 220)) return 1;
 
-    SendCommand(clientSocket, "HELO myclient.com\r\n");
-    ReceiveResponse(clientSocket);
+    SendCommand(clientSocket, "EHLO myclient.com\r\n");
+    if (!ExpectResponse(clientSocket, 250)) return 1;
 
     SendCommand(clientSocket, "MAIL FROM: <" + sender + ">\r\n");
-    ReceiveResponse(clientSocket);
+    if (!ExpectResponse(clientSocket, 250)) return 1;
 
     SendCommand(clientSocket, "RCPT TO: <" + recipient + ">\r\n");
-    ReceiveResponse(clientSocket);
+    if (!ExpectResponse(clientSocket, 250)) return 1;
 
     SendCommand(clientSocket, "DATA\r\n");
-    ReceiveResponse(clientSocket);
+    if (!ExpectResponse(clientSocket, 354)) return 1;
 
-    string message = "From: " + sender + "\r\n" +
-                     "To: " + recipient + "\r\n" +
-                     "Subject: " + subject + "\r\n" +
-                     "\r\n" +
-                     body + "\r\n" +
-                     ".\r\n";
-    
+    string message = "Subject: Test\r\n\r\nHello!\r\n.\r\n";
     SendCommand(clientSocket, message);
-    ReceiveResponse(clientSocket);
+    if (!ExpectResponse(clientSocket, 250)) return 1;
 
     SendCommand(clientSocket, "QUIT\r\n");
-    ReceiveResponse(clientSocket);
+    ExpectResponse(clientSocket, 221);
 
     close(clientSocket);
-    cout << "Connection closed." << endl;
-
     return 0;
 }

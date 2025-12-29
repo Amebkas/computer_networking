@@ -189,6 +189,13 @@ vector<DnsResourceRecord> SendQuery(string server, string host, int type, bool u
     if (receivedLen <= 0) return {};
 
     DnsHeader* head = (DnsHeader*)buffer;
+    int rcode = ntohs(head->flags) & 0x000F;
+    if (rcode != 0)
+    {
+        if (rcode == 3) LogDebug("Error: NXDOMAIN (Host not found)");
+        else LogDebug("Error: Server returned RCODE " + to_string(rcode));
+        return {}; 
+    }
     unsigned char* reader = buffer + sizeof(DnsHeader);
 
     for (int i = 0; i < ntohs(head->qCount); i++)

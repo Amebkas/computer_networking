@@ -1,10 +1,10 @@
 ## Сборка:
 ```
-cd build && cmake .. && make && cd ../
+cd build && cmake .. && make && cd ../ && echo "<html><body><h1>Hello from C++ Server</h1></body></html>" > index.html
 ```
 
 ## Запуск:
-`./build/http_proxy`
+`./build/http_server`
 
 ## Описание алгоритма кэширования
 1. Извлечение ключа: При получении GET-запроса прокси-сервер парсит URL и извлекает имя хоста и путь к ресурсу. Полная строка URL (хост + путь) используется как уникальный идентификатор ресурса.
@@ -15,45 +15,30 @@ cd build && cmake .. && make && cd ../
 3. Сохранение и трансляция: При "промахе" прокси получает данные от сервера порциями. Каждая порция одновременно отправляется клиенту и записывается в файл кэша. Таким образом, при следующем запросе данные будут отданы мгновенно с диска.
 
 ## Пример работы:
-I: `./build/http_proxy`
+I: `./build/http_server`
 
-### Впервые делаем запрос на некий url
-I: `curl -x http://localhost:8888 http://www.example.com`
-
-O:
-```
-HTTP Proxy Server started on port 8888
-[CACHE MISS] Fetching www.example.com from server
-[INFO] Response is not 200 OK. Not cahcing
-[INFO] Current Stats -> Hits: 0, Misses: 1, Errors: 0
-```
-
-### Впервые делаем запрос, который возвращает 404
-I: `curl -x http://localhost:8888 http://www.example.com`
+### Успешный запрос
+I: `curl -i http://localhost:8080/index.html`
 
 O:
 ```
-HTTP Proxy Server started on port 8888
-[CACHE MISS] Fetching www.example.com/index.html from server
-[INFO] Response is not 200 OK. Not cahcing
-[INFO] Current Stats -> Hits: 0, Misses: 1, Error: 1
+HTTP/1.1 200 OK
+Content-Type: text/html
+Content-Length: 58
+Connection: close
+
+<html><body><h1>Hello from C++ Server</h1></body></html>
 ```
 
-### Запрос несуществующего хоста
-I: `curl -x http://localhost:8888 http://unknown.host.site/index.html`
-
-O:
-```
-[CACHE MISS] Fetching unknown.host.site/index.html from server
-[ERROR] Host not found: unknown.host.site
-[INFO] Current Stats -> Hits: 0, Misses: 2
-```
-
-### Повтороный запрос на некий url
-I: `curl -x http://localhost:8888 http://www.example.com/index.html`
+### Запрос несуществующего файла
+I: `curl -i http://localhost:8080/ghost.txt`
 
 O:
 ```
-[CACHE HIT] Serving www.example.com/index.html from disk
-[INFO] Current Stats -> Hits: 1, Misses: 2
+HTTP/1.1 200 OK
+Content-Type: text/html
+Content-Length: 58
+Connection: close
+
+<html><body><h1>Hello from C++ Server</h1></body></html>
 ```
